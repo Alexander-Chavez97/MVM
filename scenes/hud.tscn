@@ -1,0 +1,25 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/hud.gd" id="1_hud"]
+
+[node name="HUD" type="CanvasLayer"]
+script = ExtResource("1_hud")
+
+[node name="Margin" type="MarginContainer" parent="."]
+offset_right = 260.0
+offset_bottom = 70.0
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 16
+
+[node name="VBox" type="VBoxContainer" parent="Margin"]
+layout_mode = 2
+
+[node name="HealthBar" type="ProgressBar" parent="Margin/VBox"]
+custom_minimum_size = Vector2(220, 18)
+layout_mode = 2
+value = 100.0
+show_percentage = false
+
+[node name="FormLabel" type="Label" parent="Margin/VBox"]
+layout_mode = 2
+text = "Regular Guy"

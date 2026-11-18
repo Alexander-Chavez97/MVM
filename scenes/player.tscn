@@ -6,12 +6,17 @@
 [ext_resource type="Resource" path="res://resources/forms/wendigo.tres" id="4_wendigo"]
 [ext_resource type="Resource" path="res://resources/forms/chupacabra.tres" id="5_chupa"]
 [ext_resource type="Script" path="res://scripts/hitbox.gd" id="6_hitbox"]
+[ext_resource type="Script" path="res://scripts/hurtbox.gd" id="7_hurtbox"]
+[ext_resource type="Script" path="res://scripts/health.gd" id="8_health"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_body"]
 size = Vector2(20, 40)
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_hit"]
 size = Vector2(44, 36)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_hurt"]
+size = Vector2(16, 36)
 
 [node name="Player" type="CharacterBody2D"]
 collision_layer = 16
@@ -53,3 +58,15 @@ disabled = true
 [node name="Slash" type="Polygon2D" parent="Hitbox"]
 visible = false
 color = Color(1, 1, 1, 0.3)
+
+[node name="Health" type="Node" parent="."]
+script = ExtResource("8_health")
+
+[node name="Hurtbox" type="Area2D" parent="."]
+collision_layer = 2
+collision_mask = 0
+script = ExtResource("7_hurtbox")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Hurtbox"]
+position = Vector2(0, -20)
+shape = SubResource("RectangleShape2D_hurt")

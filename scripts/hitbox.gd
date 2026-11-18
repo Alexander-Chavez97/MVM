@@ -6,6 +6,10 @@ extends Area2D
 
 signal hit_landed(hurtbox: Hurtbox)
 
+## Contact damage (enemy bodies): keeps hitting whatever overlaps it, every frame.
+## The target's invincibility frames are what stop it from hitting every frame.
+@export var continuous := false
+
 var damage := 0.0
 var knockback := Vector2.ZERO
 var bonus := false           # attack had the switch bonus (lets targets show it differently)
@@ -40,8 +44,9 @@ func _physics_process(_delta: float) -> void:
 		return
 	for area in get_overlapping_areas():
 		var hurtbox := area as Hurtbox
-		if hurtbox == null or hurtbox in _already_hit:
+		if hurtbox == null or (not continuous and hurtbox in _already_hit):
 			continue
-		_already_hit.append(hurtbox)
+		if not continuous:
+			_already_hit.append(hurtbox)
 		if hurtbox.receive_hit(damage, knockback, self):
 			hit_landed.emit(hurtbox)

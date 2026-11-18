@@ -24,10 +24,17 @@ dummies = [
     ("Dummy2",  560),
     ("Dummy3", 1220),
 ]
+# walker enemies: name, x
+walkers = [
+    ("Walker1", 380),   # left floor, between the dummies
+    ("Walker2", 900),   # right floor; small enough to patrol through the tunnel
+]
 out = ['[gd_scene format=3]', '',
        '[ext_resource type="PackedScene" path="res://scenes/player.tscn" id="1_player"]',
        '[ext_resource type="PackedScene" path="res://scenes/grapple_point.tscn" id="2_grapple"]',
-       '[ext_resource type="PackedScene" path="res://scenes/dummy.tscn" id="3_dummy"]', '']
+       '[ext_resource type="PackedScene" path="res://scenes/dummy.tscn" id="3_dummy"]',
+       '[ext_resource type="PackedScene" path="res://scenes/walker.tscn" id="4_walker"]',
+       '[ext_resource type="PackedScene" path="res://scenes/hud.tscn" id="5_hud"]', '']
 for n, l, t, r, b in blocks:
     out += [f'[sub_resource type="RectangleShape2D" id="Shape_{n}"]', f'size = Vector2({r-l}, {b-t})', '']
 out += ['[node name="TestRoom" type="Node2D"]', '',
@@ -44,6 +51,9 @@ for n, x, y in grapple_points:
     out += [f'[node name="{n}" parent="." instance=ExtResource("2_grapple")]', f'position = Vector2({x}, {y})', '']
 for n, x in dummies:
     out += [f'[node name="{n}" parent="." instance=ExtResource("3_dummy")]', f'position = Vector2({x}, 520)', '']
+for n, x in walkers:
+    out += [f'[node name="{n}" parent="." instance=ExtResource("4_walker")]', f'position = Vector2({x}, 520)', '']
+out += ['[node name="HUD" parent="." instance=ExtResource("5_hud")]', '']
 out += ['[node name="Player" parent="." instance=ExtResource("1_player")]', 'position = Vector2(0, 520)', '']
 open('scenes/test_room.tscn', 'w').write('\n'.join(out))
 print("wrote scenes/test_room.tscn")

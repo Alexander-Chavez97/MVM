@@ -11,12 +11,13 @@ extends CharacterBody2D
 signal state_changed(old_state: State, new_state: State)
 signal form_changed(form: FormData)
 signal swap_blocked
+signal died
 
-enum State { IDLE, RUN, JUMP, FALL, CLIMB, DASH, SWING, ATTACK }
+enum State { IDLE, RUN, JUMP, FALL, CLIMB, DASH, SWING, ATTACK, HURT }
 enum AttackPhase { STARTUP, ACTIVE, RECOVERY }
 # IDLE/RUN/JUMP/FALL are worked out from movement each frame (see _update_state).
 # The rest are entered and exited explicitly with _set_state.
-const EXPLICIT_STATES := [State.CLIMB, State.DASH, State.SWING, State.ATTACK]
+const EXPLICIT_STATES := [State.CLIMB, State.DASH, State.SWING, State.ATTACK, State.HURT]
 
 @export var forms: Array[FormData] = []
 @export var unlocked: Array[bool] = [true, true, true]  ## testing: all on. Final game: [true, false, false]
@@ -28,6 +29,13 @@ const EXPLICIT_STATES := [State.CLIMB, State.DASH, State.SWING, State.ATTACK]
 @export var attack_buffer_time := 0.15       ## s an attack press is remembered (lets combos be mashed)
 @export var switch_bonus_time := 1.0         ## s after switching forms where hits do bonus damage
 @export var switch_bonus_multiplier := 1.5
+
+@export_group("Getting hit")
+@export var hurt_time := 0.25                ## s you lose control after being hit
+@export var invincibility_time := 1.0        ## s you can't be hit again (you blink)
+@export var hurt_knockback := Vector2(300, -250)   ## px/s away from whatever hit you
+@export var respawn_delay := 1.0
+@export var kill_y := 1500.0                 ## falling below this y kills you
 
 var state := State.IDLE
 var form: FormData
@@ -60,6 +68,10 @@ var _attack_buffer_timer := 0.0
 var _combo_index := 0
 var _switch_bonus_timer := 0.0
 var _shake := 0.0
+var respawn_position := Vector2.ZERO   # set_checkpoint() changes this
+var _hurt_timer := 0.0
+var _iframe_timer := 0.0
+var _dead := false
 
 @onready var collision: CollisionShape2D = $CollisionShape2D
 @onready var body: Node2D = $Body
@@ -69,6 +81,9 @@ var _shake := 0.0
 @onready var hitbox: Hitbox = $Hitbox
 @onready var slash: Polygon2D = $Hitbox/Slash
 @onready var camera: Camera2D = $Camera2D
+@onready var health: Health = $Health
+@onready var hurtbox: Hurtbox = $Hurtbox
+@onready var hurt_shape: CollisionShape2D = $Hurtbox/CollisionShape2D
 
 
 func _ready() -> void:
@@ -76,6 +91,11 @@ func _ready() -> void:
 		push_error("Player has no forms assigned")
 		return
 	collision.shape = collision.shape.duplicate()  # don't edit the shared resource
+	hurt_shape.shape = hurt_shape.shape.duplicate()
+	add_to_group("player")
+	respawn_position = global_position
+	hurtbox.hit_received.connect(_on_hurt)
+	health.died.connect(_on_died)
 	_rope = Line2D.new()
 	_rope.top_level = true     # points are in world coordinates
 	_rope.width = 2.0
@@ -97,6 +117,8 @@ func _physics_process(delta: float) -> void:
 			_swing_move(delta)
 		State.ATTACK:
 			_attack_move(delta)
+		State.HURT:
+			_hurt_move(delta)
 		_:
 			if not _try_start_dash() and not _try_start_swing() and not _try_start_attack():
 				_handle_jump(delta)
@@ -107,7 +129,7 @@ func _physics_process(delta: float) -> void:
 		_climb_check()
 	elif state == State.SWING:
 		_swing_constrain()
-	elif state != State.DASH and state != State.ATTACK:
+	elif state not in [State.DASH, State.ATTACK, State.HURT]:
 		if is_on_ceiling() and velocity.y < 0.0:
 			_end_jump()
 		_try_start_climb()
@@ -115,6 +137,9 @@ func _physics_process(delta: float) -> void:
 	_update_grapple_target()
 	_update_rope()
 	_update_state()
+	hurtbox.invincible = _dead or _iframe_timer > 0.0 or state == State.DASH   # dash = dodge
+	if global_position.y > kill_y and not _dead:
+		health.take_damage(health.current)   # fell out of the world
 
 
 # ---------------------------------------------------------------- state machine
@@ -189,6 +214,8 @@ func try_switch_form(index: int, show_blocked := true) -> bool:
 	if _swap_timer > 0.0:
 		return false
 	if state == State.ATTACK and _attack_phase != AttackPhase.RECOVERY:
+		return false
+	if state == State.HURT:
 		return false   # can't switch mid-swing; it happens as soon as recovery starts (DMC-style cancel)
 	var offset = _find_fit_offset(forms[index].collision_size)
 	if offset == null:
@@ -218,6 +245,9 @@ func _apply_form(index: int) -> void:
 	var size := form.collision_size
 	(collision.shape as RectangleShape2D).size = size
 	collision.position = Vector2(0, -size.y / 2.0)   # keep the box standing on the feet
+	# Hurtbox a bit smaller than the body, so near-misses don't count as hits
+	(hurt_shape.shape as RectangleShape2D).size = (size - Vector2(4, 4)).max(Vector2(4, 4))
+	hurt_shape.position = collision.position
 
 	# Placeholder rectangle until real art is assigned
 	var hw := size.x / 2.0
@@ -274,6 +304,7 @@ func _update_timers(delta: float) -> void:
 	_wall_jump_lock = maxf(_wall_jump_lock - delta, 0.0)
 	_dash_cooldown_timer = maxf(_dash_cooldown_timer - delta, 0.0)
 	_switch_bonus_timer = maxf(_switch_bonus_timer - delta, 0.0)
+	_iframe_timer = maxf(_iframe_timer - delta, 0.0)
 	if Input.is_action_just_pressed("attack"):
 		_attack_buffer_timer = attack_buffer_time
 	else:
@@ -681,9 +712,79 @@ func _on_hit_landed(_hurtbox: Hurtbox) -> void:
 
 
 func _process(delta: float) -> void:
+	# Blink while invincible after a hit (self_modulate so it doesn't fight the flash/death fade)
+	if _iframe_timer > 0.0 and not _dead:
+		body.self_modulate.a = 0.3 if fmod(_iframe_timer, 0.14) < 0.07 else 1.0
+	elif body.self_modulate.a != 1.0:
+		body.self_modulate.a = 1.0
 	# Camera shake (decays quickly)
 	if _shake > 0.0:
 		_shake = maxf(_shake - 30.0 * delta, 0.0)
 		camera.offset = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * _shake
 	elif camera.offset != Vector2.ZERO:
 		camera.offset = Vector2.ZERO
+
+
+# ---------------------------------------------------------------- getting hit
+
+func set_checkpoint(pos: Vector2) -> void:
+	respawn_position = pos
+
+
+## Hurtbox got hit. Damage is divided by the form's health_multiplier,
+## so the Wendigo (2.0) takes half damage and the Chupacabra (0.6) takes ~1.7x.
+func _on_hurt(damage: float, _knockback: Vector2, source: Hitbox) -> void:
+	if _dead:
+		return
+	# Knocked away from whatever hit you (Hollow Knight style: fixed strength, not the attacker's)
+	var from_x := source.global_position.x if source != null else global_position.x + facing
+	var dir := signf(global_position.x - from_x)
+	if dir == 0.0:
+		dir = -facing
+
+	# Drop whatever you were doing
+	match state:
+		State.ATTACK:
+			_end_attack()
+		State.SWING:
+			_release_swing(false)
+		State.DASH:
+			_end_dash()
+	_is_jumping = false
+	_launched = false
+
+	_iframe_timer = invincibility_time
+	health.take_damage(damage / form.health_multiplier)
+	if _dead:
+		return   # _on_died already took over
+	velocity = Vector2(dir * hurt_knockback.x, hurt_knockback.y)
+	_hurt_timer = hurt_time
+	_set_state(State.HURT)
+	_flash(Color(1, 0.25, 0.25))
+	Juice.hitstop(self, 0.08)
+	_shake = maxf(_shake, 5.0)
+
+
+func _hurt_move(delta: float) -> void:
+	_hurt_timer -= delta
+	_apply_gravity(delta)
+	if is_on_floor():
+		velocity.x = move_toward(velocity.x, 0.0, 1500.0 * delta)
+	if _hurt_timer <= 0.0 and not _dead:
+		_set_state(State.FALL)
+
+
+func _on_died() -> void:
+	_dead = true
+	died.emit()
+	_set_state(State.HURT)
+	velocity.x = 0.0
+	create_tween().tween_property(body, "modulate:a", 0.0, 0.4)
+	await get_tree().create_timer(respawn_delay).timeout
+	global_position = respawn_position
+	velocity = Vector2.ZERO
+	health.heal_full()
+	body.modulate.a = 1.0
+	_dead = false
+	_iframe_timer = invincibility_time   # a moment of safety after respawning
+	_set_state(State.FALL)

@@ -1,0 +1,54 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/walker.gd" id="1_walker"]
+[ext_resource type="Script" path="res://scripts/health.gd" id="2_health"]
+[ext_resource type="Script" path="res://scripts/hurtbox.gd" id="3_hurtbox"]
+[ext_resource type="Script" path="res://scripts/hitbox.gd" id="4_hitbox"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_body"]
+size = Vector2(30, 26)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_hurt"]
+size = Vector2(30, 26)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_contact"]
+size = Vector2(24, 20)
+
+[node name="Walker" type="CharacterBody2D"]
+collision_layer = 8
+script = ExtResource("1_walker")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+position = Vector2(0, -13)
+shape = SubResource("RectangleShape2D_body")
+
+[node name="Body" type="Polygon2D" parent="."]
+color = Color(0.55, 0.2, 0.45, 1)
+polygon = PackedVector2Array(-15, -26, 15, -26, 15, 0, -15, 0)
+
+[node name="Eye" type="Polygon2D" parent="Body"]
+color = Color(1, 0.9, 0.3, 1)
+polygon = PackedVector2Array(-12, -21, -6, -21, -6, -16, -12, -16)
+
+[node name="Health" type="Node" parent="."]
+script = ExtResource("2_health")
+max_health = 40.0
+
+[node name="Hurtbox" type="Area2D" parent="."]
+collision_layer = 4
+collision_mask = 0
+script = ExtResource("3_hurtbox")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Hurtbox"]
+position = Vector2(0, -13)
+shape = SubResource("RectangleShape2D_hurt")
+
+[node name="ContactHitbox" type="Area2D" parent="."]
+collision_layer = 0
+collision_mask = 2
+script = ExtResource("4_hitbox")
+continuous = true
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="ContactHitbox"]
+position = Vector2(0, -13)
+shape = SubResource("RectangleShape2D_contact")
