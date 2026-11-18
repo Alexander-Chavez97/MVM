@@ -61,6 +61,7 @@ color = Color(1, 1, 1, 0.3)
 
 [node name="Health" type="Node" parent="."]
 script = ExtResource("8_health")
+max_health = 5.0
 
 [node name="Hurtbox" type="Area2D" parent="."]
 collision_layer = 2

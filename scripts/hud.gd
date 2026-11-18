@@ -1,7 +1,7 @@
 extends CanvasLayer
-## Health bar + current form name. Finds the player through the "player" group.
+## Hollow Knight-style health squares + current form name. Finds the player through the "player" group.
 
-@onready var health_bar: ProgressBar = $Margin/VBox/HealthBar
+@onready var masks: MaskBar = $Margin/VBox/Masks
 @onready var form_label: Label = $Margin/VBox/FormLabel
 
 
@@ -16,14 +16,14 @@ func _connect_player() -> void:
 		return
 	player.health.changed.connect(_on_health_changed)
 	player.form_changed.connect(_on_form_changed)
-	health_bar.max_value = player.health.max_health
-	health_bar.value = player.health.current
+	masks.max_value = player.health.max_health
+	masks.value = player.health.current
 	_on_form_changed(player.form)
 
 
 func _on_health_changed(current: float, max_value: float) -> void:
-	health_bar.max_value = max_value
-	create_tween().tween_property(health_bar, "value", current, 0.15)
+	masks.max_value = max_value
+	masks.value = current
 
 
 func _on_form_changed(form: FormData) -> void:

@@ -1,6 +1,7 @@
 [gd_scene format=3]
 
 [ext_resource type="Script" path="res://scripts/hud.gd" id="1_hud"]
+[ext_resource type="Script" path="res://scripts/mask_bar.gd" id="2_masks"]
 
 [node name="HUD" type="CanvasLayer"]
 script = ExtResource("1_hud")
@@ -14,11 +15,10 @@ theme_override_constants/margin_top = 16
 [node name="VBox" type="VBoxContainer" parent="Margin"]
 layout_mode = 2
 
-[node name="HealthBar" type="ProgressBar" parent="Margin/VBox"]
-custom_minimum_size = Vector2(220, 18)
+[node name="Masks" type="Control" parent="Margin/VBox"]
 layout_mode = 2
-value = 100.0
-show_percentage = false
+size_flags_horizontal = 0
+script = ExtResource("2_masks")
 
 [node name="FormLabel" type="Label" parent="Margin/VBox"]
 layout_mode = 2

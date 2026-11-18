@@ -43,18 +43,12 @@ extends Resource
 @export var launch_air_control := 900.0        ## px/s² steering after letting go (momentum is kept)
 
 @export_group("Combat")
-@export var health_multiplier := 1.0
-@export var attack_damage := 8.0
-@export var attack_reach := 44.0               ## px the hitbox sticks out in front of the body
-@export var attack_height := 36.0              ## px tall
-@export var attack_startup := 0.08             ## s before the hit comes out
-@export var attack_active := 0.08              ## s the hitbox is live
-@export var attack_recovery := 0.15            ## s after; chain the next hit, jump, dash or switch forms here
-@export var combo_length := 3                  ## hits in the combo; the last one is the finisher
-@export var finisher_multiplier := 1.5         ## finisher damage and knockback
-@export var knockback := 220.0                 ## px/s pushed on the target
-@export var hitstop := 0.05                    ## s freeze-frame when a hit lands
-@export var screen_shake := 2.0                ## px camera shake when a hit lands
+@export var health_multiplier := 1.0           ## damage taken is divided by this
+@export var combo: Array[AttackData] = []      ## ground combo, in order (Attack)
+@export var air_combo: Array[AttackData] = []  ## air combo, in order (Attack in the air)
+@export var forward_attack: AttackData         ## Attack while holding left/right on the ground
+@export var up_attack: AttackData              ## Attack while holding up (launcher)
+@export var down_air_attack: AttackData        ## Attack while holding down in the air
 
 @export_group("Art")
 ## Set this when the animations are ready. Expected names: idle, run, jump, fall, climb, dash, swing, attack

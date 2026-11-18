@@ -13,6 +13,8 @@ signal hit_landed(hurtbox: Hurtbox)
 var damage := 0.0
 var knockback := Vector2.ZERO
 var bonus := false           # attack had the switch bonus (lets targets show it differently)
+var hitstun := 0.3           # s the target is stunned (enemies read this)
+var radial := false          # knockback pushes away from the hitbox center (shockwaves)
 var active := false
 var _already_hit: Array[Hurtbox] = []
 
@@ -25,10 +27,11 @@ func _ready() -> void:
 	shape.disabled = true
 
 
-func activate(dmg: float, kb: Vector2, is_bonus := false) -> void:
+func activate(dmg: float, kb: Vector2, is_bonus := false, stun := 0.3) -> void:
 	damage = dmg
 	knockback = kb
 	bonus = is_bonus
+	hitstun = stun
 	_already_hit.clear()
 	active = true
 	shape.set_deferred("disabled", false)
@@ -48,5 +51,9 @@ func _physics_process(_delta: float) -> void:
 			continue
 		if not continuous:
 			_already_hit.append(hurtbox)
-		if hurtbox.receive_hit(damage, knockback, self):
+		var kb := knockback
+		if radial:
+			var side := signf(hurtbox.global_position.x - global_position.x)
+			kb.x = absf(kb.x) * (side if side != 0.0 else 1.0)
+		if hurtbox.receive_hit(damage, kb, self):
 			hit_landed.emit(hurtbox)

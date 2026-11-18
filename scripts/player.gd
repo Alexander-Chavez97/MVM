@@ -5,7 +5,8 @@ extends CharacterBody2D
 ## hold hold_wendigo / hold_chupacabra to stay transformed, let go to snap back.
 ## Abilities: Wendigo wall climb (automatic), Chupacabra dash (special),
 ## Regular Guy swing (hold special near a grapple point).
-## Combat: attack button, per-form combos (stats in FormData). Switching forms gives a damage bonus.
+## Combat (DMC-style): per-form move sets (AttackData) with directional moves, launchers,
+## air combos and cancels. Switching forms gives a damage bonus on your next hit.
 ## Origin is at the player's feet.
 
 signal state_changed(old_state: State, new_state: State)
@@ -18,6 +19,9 @@ enum AttackPhase { STARTUP, ACTIVE, RECOVERY }
 # IDLE/RUN/JUMP/FALL are worked out from movement each frame (see _update_state).
 # The rest are entered and exited explicitly with _set_state.
 const EXPLICIT_STATES := [State.CLIMB, State.DASH, State.SWING, State.ATTACK, State.HURT]
+const SLAM_SPEED := 1000.0          ## px/s plummet for slam moves
+const HANG_GRAVITY_SCALE := 0.12    ## gravity fraction during an air-hang attack
+const HANG_MAX_FALL := 120.0        ## px/s max fall during an air-hang attack
 
 @export var forms: Array[FormData] = []
 @export var unlocked: Array[bool] = [true, true, true]  ## testing: all on. Final game: [true, false, false]
@@ -66,6 +70,11 @@ var _attack_phase := AttackPhase.STARTUP
 var _attack_timer := 0.0
 var _attack_buffer_timer := 0.0
 var _combo_index := 0
+var _attack: AttackData            # move being performed
+var _chain_key := ""               # "combo" / "air" while in a combo string, "" for single moves
+var _hanging := false              # air hang active for this move
+var _air_hang_charges := 1         # refills on landing, pogo, launcher follow, hook grab, wall grab
+var _slam_landed := false
 var _switch_bonus_timer := 0.0
 var _shake := 0.0
 var respawn_position := Vector2.ZERO   # set_checkpoint() changes this
@@ -166,6 +175,8 @@ func _play_animation() -> void:
 	if not sprite.visible:
 		return
 	var anim: String = State.keys()[state].to_lower()   # IDLE -> "idle"
+	if state == State.ATTACK and _attack != null and _attack.animation != "":
+		anim = _attack.animation   # each move can have its own animation
 	if sprite.sprite_frames.has_animation(anim):
 		sprite.play(anim)
 
@@ -311,6 +322,7 @@ func _update_timers(delta: float) -> void:
 		_attack_buffer_timer = maxf(_attack_buffer_timer - delta, 0.0)
 	if is_on_floor():
 		_coyote_timer = coyote_time
+		_air_hang_charges = 1
 		_refill_dashes(false)   # runs every frame on the ground: don't wipe the cooldown
 	else:
 		_coyote_timer = maxf(_coyote_timer - delta, 0.0)
@@ -383,6 +395,7 @@ func _try_start_climb() -> void:
 	_wall_dir = wall_side
 	_is_jumping = false
 	_launched = false
+	_air_hang_charges = 1
 	velocity = Vector2.ZERO
 	facing = _wall_dir
 	_set_state(State.CLIMB)
@@ -554,6 +567,7 @@ func _try_start_swing() -> bool:
 	_is_jumping = false
 	_launched = false
 	_refill_dashes()   # grabbing a hook gives the air dash back, so swing -> dash -> swing chains
+	_air_hang_charges = 1
 	_set_state(State.SWING)
 	return true
 
@@ -620,95 +634,206 @@ func _update_rope() -> void:
 
 
 # ---------------------------------------------------------------- combat
+# Which move comes out (checked in this order):
+#   holding up               -> up_attack (launcher)
+#   holding down, in the air -> down_air_attack (stomp / dive / slam)
+#   holding left/right, on the ground -> forward_attack (lunge)
+#   otherwise                -> next hit of combo (ground) or air_combo (air)
+# During a move's recovery you can chain into any of these, jump, dash, or switch forms.
 
 func _try_start_attack() -> bool:
 	if _attack_buffer_timer <= 0.0:
 		return false
+	var pick := _choose_attack(false)
+	if pick.is_empty():
+		return false
 	_attack_buffer_timer = 0.0
-	_combo_index = 0
-	_begin_attack_step()
+	_start_move(pick)
 	return true
 
 
-func _begin_attack_step() -> void:
-	_is_jumping = false      # attacking mid-jump stops the held rise; you coast up instead
+## Returns {move, key, index} or {} if nothing should come out.
+func _choose_attack(continuing: bool) -> Dictionary:
+	var grounded := is_on_floor()
+	var horiz := signf(Input.get_axis("move_left", "move_right"))
+	if Input.is_action_pressed("move_up") and form.up_attack != null:
+		return {move = form.up_attack, key = "", index = 0}
+	if not grounded and Input.is_action_pressed("move_down") and form.down_air_attack != null:
+		return {move = form.down_air_attack, key = "", index = 0}
+	if grounded and horiz != 0.0 and form.forward_attack != null:
+		facing = horiz   # lunge the way you're holding
+		return {move = form.forward_attack, key = "", index = 0}
+	var use_air := not grounded and not form.air_combo.is_empty()
+	var key := "air" if use_air else "combo"
+	var chain: Array = form.air_combo if use_air else form.combo
+	var index := 0
+	if continuing and _chain_key == key:
+		index = _combo_index + 1
+	if index >= chain.size():
+		return {}   # combo finished: wait for recovery to end
+	return {move = chain[index], key = key, index = index}
+
+
+func _start_move(pick: Dictionary) -> void:
+	_attack = pick.move
+	_chain_key = pick.key
+	_combo_index = pick.index
+	_is_jumping = false
 	_launched = false
+	_slam_landed = false
+	hitbox.radial = false
+	# Air hang: the first hit of an air string spends the charge; later hits in that string keep it
+	var airborne := not is_on_floor()
+	if _combo_index == 0:
+		_hanging = airborne and _attack.air_hang and _air_hang_charges > 0
+		if _hanging:
+			_air_hang_charges -= 1
+	else:
+		_hanging = _hanging and airborne and _attack.air_hang
+	if _hanging:
+		velocity.y = minf(velocity.y, 0.0)   # stop falling (keep rising if you were)
+	if _attack.slam:
+		velocity = Vector2.ZERO
 	_attack_phase = AttackPhase.STARTUP
-	_attack_timer = form.attack_startup
+	_attack_timer = _attack.startup
 	_set_state(State.ATTACK)
-	_play_animation()        # restart the animation for each combo hit
+	_play_animation()   # restart it for each hit of a combo
 
 
-## Startup -> active (hitbox live) -> recovery (cancel window).
-## Ground attacks root you in place; air attacks keep your air control (Hollow Knight style).
 func _attack_move(delta: float) -> void:
 	_attack_timer -= delta
 	match _attack_phase:
 		AttackPhase.STARTUP:
+			if _attack.slam:
+				velocity = Vector2.ZERO   # hang in the air for a moment before slamming down
 			if _attack_timer <= 0.0:
 				_activate_hitbox()
 		AttackPhase.ACTIVE:
-			if _attack_timer <= 0.0:
-				hitbox.deactivate()
-				slash.visible = false
-				_attack_phase = AttackPhase.RECOVERY
-				_attack_timer = form.attack_recovery
+			if _attack.slam and not _slam_landed:
+				velocity = Vector2(0.0, SLAM_SPEED)
+				if is_on_floor():
+					_slam_shockwave()
+				return   # plummeting: no other movement
+			var landed_dive := _attack.lunge.y > 0.0 and is_on_floor()
+			if _attack_timer <= 0.0 or landed_dive:
+				_to_recovery()
 		AttackPhase.RECOVERY:
-			# Cancel window: next combo hit, jump, dash. (Form switching is handled in try_switch_form.)
-			if _attack_buffer_timer > 0.0 and _combo_index < form.combo_length - 1:
-				_attack_buffer_timer = 0.0
-				_combo_index += 1
-				_begin_attack_step()
-			elif _jump_buffer_timer > 0.0 and _coyote_timer > 0.0:
-				_end_attack()
-				_handle_jump(delta)
-			elif form.can_dash and Input.is_action_just_pressed("special"):
-				_end_attack()
-				if _try_start_dash():
-					return
-			elif _attack_timer <= 0.0:
-				_end_attack()
+			if _attack_buffer_timer > 0.0:
+				var pick := _choose_attack(true)
+				if not pick.is_empty():
+					_attack_buffer_timer = 0.0
+					_start_move(pick)
+			if _attack_phase == AttackPhase.RECOVERY:   # (didn't chain above)
+				if _jump_buffer_timer > 0.0 and _coyote_timer > 0.0:
+					_end_attack()
+					_handle_jump(delta)
+				elif form.can_dash and Input.is_action_just_pressed("special"):
+					_end_attack()
+					if _try_start_dash():
+						return
+				elif _attack_timer <= 0.0:
+					_end_attack()
 
-	_apply_gravity(delta)
-	if state == State.ATTACK and is_on_floor():
-		velocity.x = 0.0
+	if state != State.ATTACK:
+		_apply_gravity(delta)
+		_handle_run()
+		return
+	var lunging := _attack.lunge != Vector2.ZERO and _attack_phase != AttackPhase.RECOVERY
+	if lunging:
+		velocity.x = facing * _attack.lunge.x
+		if _attack.lunge.y != 0.0:
+			velocity.y = _attack.lunge.y
+	elif is_on_floor():
+		velocity.x = 0.0          # ground attacks root you
 	else:
-		_handle_run(state != State.ATTACK)   # no turning around mid-swing
+		_handle_run(false)        # air control, but no turning around mid-swing
+	if _hanging:
+		velocity.y = minf(velocity.y + form.gravity * HANG_GRAVITY_SCALE * delta, HANG_MAX_FALL)
+	elif not (lunging and _attack.lunge.y != 0.0):
+		_apply_gravity(delta)
 
 
 func _activate_hitbox() -> void:
 	_attack_phase = AttackPhase.ACTIVE
-	_attack_timer = form.attack_active
-	var is_finisher := form.combo_length > 1 and _combo_index == form.combo_length - 1
-	var mult := form.finisher_multiplier if is_finisher else 1.0
+	_attack_timer = _attack.active
 	var bonus := _switch_bonus_timer > 0.0
-	var dmg := form.attack_damage * mult * (switch_bonus_multiplier if bonus else 1.0)
-	var kb := form.knockback * mult
+	var dmg := _attack.damage * (switch_bonus_multiplier if bonus else 1.0)
+	var size := Vector2(_attack.reach, _attack.height)
+	var x := 0.0
+	if not _attack.centered:
+		x = facing * ((form.collision_size.x + size.x) / 2.0 + _attack.offset.x)
+	_place_hitbox(Vector2(x, -form.collision_size.y / 2.0 + _attack.offset.y), size)
+	var kb := Vector2(facing * _attack.knockback.x, _attack.knockback.y)
+	if _attack.slam:
+		kb = Vector2(0.0, 600.0)   # while falling, spike anything below; the shockwave uses the move's knockback
+	hitbox.activate(dmg, kb, bonus, _attack.hitstun)
+	_show_slash(size, bonus)
 
-	# Hitbox sits in front of the body, centered on it vertically
-	var size := Vector2(form.attack_reach, form.attack_height)
-	hitbox.position = Vector2(facing * (form.collision_size.x + size.x) / 2.0, -form.collision_size.y / 2.0)
+	# Launchers: rise with the enemy so you meet it at the top (DMC "High Time")
+	if _attack.follow_launch == 2 or (_attack.follow_launch == 1 and Input.is_action_pressed("jump")):
+		velocity.y = -_launch_follow_speed(_attack.knockback.y)
+		_air_hang_charges = 1
+		_jump_buffer_timer = 0.0   # the jump press was used for following, not for a jump-cancel
+		_coyote_timer = 0.0
+
+
+## Same height as the launched enemy despite different gravity:
+##   enemy rises h = v_e² / (2 g_e);  you need v_p = sqrt(2 g_p h) = |v_e| * sqrt(g_p / g_e)
+func _launch_follow_speed(enemy_launch_y: float) -> float:
+	return absf(enemy_launch_y) * sqrt(form.gravity / Enemy.JUGGLE_GRAVITY)
+
+
+func _slam_shockwave() -> void:
+	_slam_landed = true
+	_attack_timer = _attack.active
+	var size := Vector2(_attack.slam_radius * 2.0, 40.0)
+	_place_hitbox(Vector2(0.0, -20.0), size)
+	hitbox.radial = true   # push everything away from where you landed
+	hitbox.activate(_attack.damage, _attack.knockback, false, _attack.hitstun)
+	_show_slash(size, false)
+	_shake = maxf(_shake, _attack.screen_shake)
+
+
+func _place_hitbox(pos: Vector2, size: Vector2) -> void:
+	hitbox.position = pos
 	(hitbox.shape.shape as RectangleShape2D).size = size
-	hitbox.activate(dmg, Vector2(facing * kb, -kb * 0.35), bonus)   # slight upward pop
 
-	# Placeholder slash: shows the exact hit area. Gold = switch bonus, bigger alpha = finisher.
+
+## Placeholder slash showing the exact hit area. Gold = switch bonus.
+func _show_slash(size: Vector2, bonus: bool) -> void:
 	var h := size / 2.0
 	slash.polygon = PackedVector2Array([Vector2(-h.x, -h.y), Vector2(h.x, -h.y), Vector2(h.x, h.y), Vector2(-h.x, h.y)])
-	slash.color = Color(1, 0.8, 0.25, 0.5) if bonus else Color(1, 1, 1, 0.5 if is_finisher else 0.3)
+	slash.color = Color(1, 0.8, 0.25, 0.5) if bonus else Color(1, 1, 1, 0.35)
 	slash.visible = true
+
+
+func _to_recovery() -> void:
+	hitbox.deactivate()
+	slash.visible = false
+	_attack_phase = AttackPhase.RECOVERY
+	_attack_timer = _attack.recovery
 
 
 func _end_attack() -> void:
 	hitbox.deactivate()
+	hitbox.radial = false
 	slash.visible = false
 	_combo_index = 0
+	_chain_key = ""
+	_hanging = false
 	_set_state(State.FALL)   # _update_state picks the real state right after
 
 
-func _on_hit_landed(_hurtbox: Hurtbox) -> void:
+func _on_hit_landed(_hurt: Hurtbox) -> void:
 	_switch_bonus_timer = 0.0   # bonus is used up by the first hit that connects
-	Juice.hitstop(self, form.hitstop)
-	_shake = maxf(_shake, form.screen_shake)
+	Juice.hitstop(self, _attack.hitstop)
+	_shake = maxf(_shake, _attack.screen_shake)
+	if _attack.pogo > 0.0 and state == State.ATTACK:
+		# Bounce off (Hollow Knight pogo): up you go, dash and air hang refreshed
+		velocity.y = -_attack.pogo
+		_refill_dashes()
+		_air_hang_charges = 1
+		_to_recovery()
 
 
 func _process(delta: float) -> void:
@@ -731,8 +856,9 @@ func set_checkpoint(pos: Vector2) -> void:
 	respawn_position = pos
 
 
-## Hurtbox got hit. Damage is divided by the form's health_multiplier,
-## so the Wendigo (2.0) takes half damage and the Chupacabra (0.6) takes ~1.7x.
+## Hurtbox got hit. Health is Hollow Knight-style squares (5 by default); enemies deal 1 per hit.
+## Damage is divided by the form's health_multiplier and rounded to half squares:
+## Regular Guy 1, Wendigo (2.0) 0.5, Chupacabra (0.6) 1.5. Never less than half a square.
 func _on_hurt(damage: float, _knockback: Vector2, source: Hitbox) -> void:
 	if _dead:
 		return
@@ -754,7 +880,7 @@ func _on_hurt(damage: float, _knockback: Vector2, source: Hitbox) -> void:
 	_launched = false
 
 	_iframe_timer = invincibility_time
-	health.take_damage(damage / form.health_multiplier)
+	health.take_damage(maxf(snappedf(damage / form.health_multiplier, 0.5), 0.5))
 	if _dead:
 		return   # _on_died already took over
 	velocity = Vector2(dir * hurt_knockback.x, hurt_knockback.y)

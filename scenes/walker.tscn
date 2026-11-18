@@ -17,6 +17,7 @@ size = Vector2(24, 20)
 [node name="Walker" type="CharacterBody2D"]
 collision_layer = 8
 script = ExtResource("1_walker")
+contact_damage = 1.0
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
 position = Vector2(0, -13)
