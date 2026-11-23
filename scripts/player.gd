@@ -27,7 +27,6 @@ const HANG_GRAVITY_SCALE := 0.12    ## gravity fraction during an air-hang attac
 const HANG_MAX_FALL := 120.0        ## px/s max fall during an air-hang attack
 
 @export var forms: Array[FormData] = []
-@export var unlocked: Array[bool] = [true, true, true]  ## testing: all on. Final game: [true, false, false]
 @export var swap_cooldown := 0.1         ## s between form switches
 @export var coyote_time := 0.08
 @export var jump_buffer_time := 0.1
@@ -250,14 +249,13 @@ func _handle_form_input() -> void:
 		try_switch_form(desired, new_request)
 
 
+## Which forms you have comes from the progress tracker (GameState), so it survives room changes.
 func is_unlocked(index: int) -> bool:
-	return index < unlocked.size() and unlocked[index]
+	return GameState.is_unlocked(index)
 
 
 func unlock_form(index: int) -> void:
-	while unlocked.size() <= index:
-		unlocked.append(false)
-	unlocked[index] = true
+	GameState.unlock_form(index)
 
 
 ## Returns true if the switch happened.
@@ -572,6 +570,15 @@ func _spawn_ghost() -> void:
 
 # ---------------------------------------------------------------- swing (Regular Guy)
 
+## The Regular Guy's kit is found during the game: hook -> crossbow -> tether (see GameState).
+func _has_hook() -> bool:
+	return form.can_swing and GameState.has_ability(GameState.HOOK)
+
+
+func _has_crossbow() -> bool:
+	return form.can_shoot and GameState.has_ability(GameState.CROSSBOW)
+
+
 func _center() -> Vector2:
 	return global_position + Vector2(0, -form.collision_size.y / 2.0)
 
@@ -580,7 +587,7 @@ func _center() -> Vector2:
 ## That one gets highlighted so the player knows Special will grab it.
 func _update_grapple_target() -> void:
 	var best: GrapplePoint = null
-	if form.can_swing and state != State.SWING:
+	if _has_hook() and state != State.SWING:
 		var c := _center()
 		var best_d := form.swing_range
 		var space := get_world_2d().direct_space_state
@@ -608,7 +615,7 @@ func _update_grapple_target() -> void:
 
 
 func _try_start_swing() -> bool:
-	if not form.can_swing or _grapple_target == null:
+	if not _has_hook() or _grapple_target == null:
 		return false
 	if not Input.is_action_just_pressed("special"):
 		return false
@@ -1040,7 +1047,7 @@ func _update_target() -> void:
 	if target == null:
 		target = _pick_auto_target()
 	# Reticle only matters while you have the crossbow
-	_reticle.visible = target != null and form.can_shoot
+	_reticle.visible = target != null and _has_crossbow()
 	if _reticle.visible:
 		_reticle.global_position = target.get_center()
 		_reticle.target_size = Vector2(28, target.get_height())
@@ -1115,7 +1122,7 @@ func _handle_shooting(delta: float) -> void:
 
 
 func _can_shoot() -> bool:
-	if not form.can_shoot or _dead:
+	if not _has_crossbow() or _dead:
 		return false
 	if state == State.ATTACK:
 		return _attack_phase == AttackPhase.RECOVERY
@@ -1151,7 +1158,7 @@ func _fire_bolt(charged: bool) -> void:
 
 
 func _update_charge_orb() -> void:
-	var show_orb := form.can_shoot and _charge > 0.15
+	var show_orb := _has_crossbow() and _charge > 0.15
 	_charge_orb.visible = show_orb
 	if not show_orb:
 		return
@@ -1166,7 +1173,7 @@ func _update_charge_orb() -> void:
 # A launched target freezes in the air for a moment so you meet it. Refreshes air combo + dash.
 
 func _can_tether() -> bool:
-	return form.can_shoot and _target_ok(target, form.tether_range)
+	return form.can_shoot and GameState.has_ability(GameState.TETHER) and _target_ok(target, form.tether_range)
 
 
 func _try_start_tether() -> bool:
