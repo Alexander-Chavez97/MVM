@@ -59,6 +59,8 @@ extends Resource
 @export var forward_attack: AttackData         ## Attack while holding left/right on the ground
 @export var up_attack: AttackData              ## Attack while holding up (launcher)
 @export var down_air_attack: AttackData        ## Attack while holding down in the air
+@export var pause_finisher: AttackData         ## pause combo: wait a beat after combo hit `pause_after`, then Attack
+@export var pause_after := 1                   ## combo index (0 = first hit) the pause comes after
 
 @export_group("Art")
 ## Set this when the animations are ready. Expected names: idle, run, jump, fall, climb, dash, swing, attack

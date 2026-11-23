@@ -13,6 +13,7 @@ extends Resource
 @export var height := 36.0                 ## px tall
 @export var offset := Vector2.ZERO         ## extra offset from the default spot (x forward, y down)
 @export var centered := false              ## hitbox on the body instead of in front (stomps, slams)
+@export var radial := false                ## knockback pushes away from the hitbox center (quakes)
 
 @export_group("Timing")
 @export var startup := 0.08                ## s before the hit comes out
@@ -32,3 +33,8 @@ extends Resource
 @export var pogo := 0.0                    ## on hit: bounce up at this speed (and refresh your dash)
 @export var slam := false                  ## plummet until landing, then a shockwave
 @export var slam_radius := 110.0           ## px each side of the shockwave
+
+@export_group("Charge")
+@export var chargeable := false            ## hold Attack during the windup to power it up
+@export var charge_max_time := 0.6         ## s of holding for a full charge
+@export var charge_damage_mult := 2.0      ## damage at full charge (knockback x1.5, hitbox x1.25)

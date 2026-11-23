@@ -5,6 +5,7 @@
 
 [sub_resource type="Resource" id="Attack_combo_0"]
 script = ExtResource("2_attack")
+chargeable = true
 move_name = "Rake"
 damage = 20.0
 reach = 90.0
@@ -19,6 +20,7 @@ screen_shake = 5.0
 
 [sub_resource type="Resource" id="Attack_combo_1"]
 script = ExtResource("2_attack")
+chargeable = true
 move_name = "Maul"
 damage = 30.0
 reach = 96.0
@@ -33,6 +35,7 @@ screen_shake = 8.0
 
 [sub_resource type="Resource" id="Attack_air_combo_0"]
 script = ExtResource("2_attack")
+chargeable = true
 move_name = "Air Rake"
 damage = 18.0
 reach = 80.0
@@ -48,6 +51,7 @@ air_hang = true
 
 [sub_resource type="Resource" id="Attack_forward_attack_0"]
 script = ExtResource("2_attack")
+chargeable = true
 move_name = "Charge"
 damage = 22.0
 reach = 30.0
@@ -63,6 +67,7 @@ screen_shake = 7.0
 
 [sub_resource type="Resource" id="Attack_up_attack_0"]
 script = ExtResource("2_attack")
+chargeable = true
 move_name = "Heave"
 damage = 18.0
 reach = 70.0
@@ -78,6 +83,7 @@ screen_shake = 6.0
 
 [sub_resource type="Resource" id="Attack_down_air_attack_0"]
 script = ExtResource("2_attack")
+chargeable = true
 move_name = "Earthshaker"
 damage = 25.0
 reach = 32.0
@@ -92,6 +98,24 @@ knockback = Vector2(320, -380)
 hitstun = 0.7
 hitstop = 0.14
 screen_shake = 10.0
+
+[sub_resource type="Resource" id="Attack_pause_finisher_0"]
+script = ExtResource("2_attack")
+move_name = "Quake"
+damage = 22.0
+reach = 200.0
+height = 40.0
+centered = true
+radial = true
+offset = Vector2(0, 8)
+startup = 0.3
+active = 0.1
+recovery = 0.45
+knockback = Vector2(260, -320)
+hitstun = 0.6
+hitstop = 0.12
+screen_shake = 8.0
+chargeable = true
 
 [resource]
 script = ExtResource("1_form")
@@ -110,3 +134,5 @@ air_combo = Array[ExtResource("2_attack")]([SubResource("Attack_air_combo_0")])
 forward_attack = SubResource("Attack_forward_attack_0")
 up_attack = SubResource("Attack_up_attack_0")
 down_air_attack = SubResource("Attack_down_air_attack_0")
+pause_finisher = SubResource("Attack_pause_finisher_0")
+pause_after = 0

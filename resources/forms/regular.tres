@@ -122,6 +122,21 @@ knockback = Vector2(0, 400)
 pogo = 480.0
 hitstun = 0.4
 
+[sub_resource type="Resource" id="Attack_pause_finisher_0"]
+script = ExtResource("2_attack")
+move_name = "Rising Knee"
+damage = 10.0
+reach = 34.0
+height = 40.0
+startup = 0.07
+active = 0.1
+recovery = 0.3
+knockback = Vector2(120, -480)
+hitstun = 0.6
+hitstop = 0.07
+screen_shake = 3.0
+follow_launch = 1
+
 [resource]
 script = ExtResource("1_form")
 form_name = "Regular Guy"
@@ -140,3 +155,5 @@ air_combo = Array[ExtResource("2_attack")]([SubResource("Attack_air_combo_0"), S
 forward_attack = SubResource("Attack_forward_attack_0")
 up_attack = SubResource("Attack_up_attack_0")
 down_air_attack = SubResource("Attack_down_air_attack_0")
+pause_finisher = SubResource("Attack_pause_finisher_0")
+pause_after = 1

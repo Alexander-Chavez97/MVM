@@ -167,6 +167,21 @@ hitstun = 0.4
 hitstop = 0.03
 screen_shake = 1.0
 
+[sub_resource type="Resource" id="Attack_pause_finisher_0"]
+script = ExtResource("2_attack")
+move_name = "Frenzy"
+damage = 8.0
+reach = 30.0
+height = 24.0
+startup = 0.05
+active = 0.25
+recovery = 0.2
+lunge = Vector2(300, 0)
+knockback = Vector2(260, -60)
+hitstun = 0.5
+hitstop = 0.05
+screen_shake = 2.0
+
 [resource]
 script = ExtResource("1_form")
 form_name = "Chupacabra"
@@ -184,3 +199,5 @@ air_combo = Array[ExtResource("2_attack")]([SubResource("Attack_air_combo_0"), S
 forward_attack = SubResource("Attack_forward_attack_0")
 up_attack = SubResource("Attack_up_attack_0")
 down_air_attack = SubResource("Attack_down_air_attack_0")
+pause_finisher = SubResource("Attack_pause_finisher_0")
+pause_after = 1

@@ -6,7 +6,8 @@ extends CharacterBody2D
 ## Abilities: Wendigo wall climb (automatic), Chupacabra dash (special),
 ## Regular Guy swing (hold special near a grapple point).
 ## Combat (DMC-style): per-form move sets (AttackData) with directional moves, launchers,
-## air combos and cancels. Switching forms gives a damage bonus on your next hit.
+## air combos, cancels, pause combos and (Wendigo) charged moves. Switching forms gives a
+## damage + hitstun bonus on your next hit and, in mid-air, a fresh air combo.
 ## Regular Guy crossbow (RT): auto lock-on (swap with right stick), tap/charged bolts; tether to enemies (LT).
 ## Origin is at the player's feet.
 
@@ -35,6 +36,8 @@ const HANG_MAX_FALL := 120.0        ## px/s max fall during an air-hang attack
 @export var attack_buffer_time := 0.15       ## s an attack press is remembered (lets combos be mashed)
 @export var switch_bonus_time := 1.0         ## s after switching forms where hits do bonus damage
 @export var switch_bonus_multiplier := 1.5
+@export var switch_bonus_hitstun := 1.5      ## the bonus hit also stuns longer, so slower forms can link
+@export var pause_window := 0.45             ## s after a combo hit's recovery ends where Attack gives the pause finisher
 
 @export_group("Enemy step")
 @export var step_reach := 14.0               ## px of slack around bodies that still counts as touching
@@ -93,6 +96,11 @@ var _charge := 0.0                 # s Shoot has been held (keeps building throu
 var _charge_orb: Polygon2D
 var _lift_timer := 0.0
 var _steps := {}                   # enemy instance id -> times jumped off it this airtime
+var _air_switched := {}            # form indexes switched into this airtime (each refreshes air combo once)
+var _charging := false             # holding Attack to charge the current move
+var _charge_t := 0.0
+var _charge_ratio := 0.0           # 0..1, locked in when the hit comes out
+var _pause_timer := 0.0            # >0: a pause finisher is available
 var _switch_bonus_timer := 0.0
 var _shake := 0.0
 var respawn_position := Vector2.ZERO   # set_checkpoint() changes this
@@ -271,6 +279,11 @@ func try_switch_form(index: int, show_blocked := true) -> bool:
 	global_position.x += offset
 	_apply_form(index)
 	_switch_bonus_timer = switch_bonus_time
+	# Mid-air switch: each form gets a fresh air combo once per airtime, so Regular -> Chupacabra -> Wendigo
+	# air strings can chain in one jump, but flipping back and forth can't float you forever.
+	if not is_on_floor() and not _air_switched.has(index):
+		_air_switched[index] = true
+		_air_hang_charges = 1
 	_swap_timer = swap_cooldown
 	_pop()
 	return true
@@ -346,6 +359,7 @@ func _flash(color: Color) -> void:
 
 func _update_timers(delta: float) -> void:
 	_swap_timer = maxf(_swap_timer - delta, 0.0)
+	_pause_timer = maxf(_pause_timer - delta, 0.0)
 	_wall_jump_lock = maxf(_wall_jump_lock - delta, 0.0)
 	_dash_cooldown_timer = maxf(_dash_cooldown_timer - delta, 0.0)
 	_switch_bonus_timer = maxf(_switch_bonus_timer - delta, 0.0)
@@ -358,6 +372,7 @@ func _update_timers(delta: float) -> void:
 		_coyote_timer = coyote_time
 		_air_hang_charges = 1
 		_steps.clear()
+		_air_switched.clear()
 		_refill_dashes(false)   # runs every frame on the ground: don't wipe the cooldown
 	else:
 		_coyote_timer = maxf(_coyote_timer - delta, 0.0)
@@ -683,6 +698,11 @@ func _try_start_attack() -> bool:
 	if _attack_buffer_timer <= 0.0:
 		return false
 	var pick := _choose_attack(false)
+	# Pause combo: you waited a beat after the right combo hit, and pressed Attack with no direction
+	if _pause_timer > 0.0 and form.pause_finisher != null and is_on_floor() \
+			and pick.get("key", "") == "combo":
+		pick = {move = form.pause_finisher, key = "", index = 0}
+	_pause_timer = 0.0
 	if pick.is_empty():
 		return false
 	_attack_buffer_timer = 0.0
@@ -735,6 +755,9 @@ func _start_move(pick: Dictionary) -> void:
 		velocity = Vector2.ZERO
 	_attack_phase = AttackPhase.STARTUP
 	_attack_timer = _attack.startup
+	_charge_t = 0.0
+	_charge_ratio = 0.0
+	_charging = _attack.chargeable and Input.is_action_pressed("attack")
 	_set_state(State.ATTACK)
 	_play_animation()   # restart it for each hit of a combo
 
@@ -751,6 +774,7 @@ func _attack_move(delta: float) -> void:
 		AttackPhase.STARTUP:
 			if _attack.slam:
 				velocity = Vector2.ZERO   # hang in the air for a moment before slamming down
+			_update_move_charge(delta)
 			if _attack_timer <= 0.0:
 				_activate_hitbox()
 		AttackPhase.ACTIVE:
@@ -777,7 +801,11 @@ func _attack_move(delta: float) -> void:
 					_try_start_tether()
 					return
 				elif _attack_timer <= 0.0:
+					var pause_ready := _chain_key == "combo" and _combo_index == form.pause_after \
+							and form.pause_finisher != null
 					_end_attack()
+					if pause_ready:
+						_pause_timer = pause_window   # the "pause" in a pause combo starts now
 
 	if state != State.ATTACK:
 		_apply_gravity(delta)
@@ -802,16 +830,21 @@ func _activate_hitbox() -> void:
 	_attack_phase = AttackPhase.ACTIVE
 	_attack_timer = _attack.active
 	var bonus := _switch_bonus_timer > 0.0
-	var dmg := _attack.damage * (switch_bonus_multiplier if bonus else 1.0)
-	var size := Vector2(_attack.reach, _attack.height)
+	_charge_ratio = clampf(_charge_t / _attack.charge_max_time, 0.0, 1.0) if _attack.chargeable else 0.0
+	_end_charge_glow()
+	var dmg := _attack.damage * (switch_bonus_multiplier if bonus else 1.0) \
+			* lerpf(1.0, _attack.charge_damage_mult, _charge_ratio)
+	var size := Vector2(_attack.reach, _attack.height) * lerpf(1.0, 1.25, _charge_ratio)
 	var x := 0.0
 	if not _attack.centered:
 		x = facing * ((form.collision_size.x + size.x) / 2.0 + _attack.offset.x)
 	_place_hitbox(Vector2(x, -form.collision_size.y / 2.0 + _attack.offset.y), size)
-	var kb := Vector2(facing * _attack.knockback.x, _attack.knockback.y)
+	var kb := Vector2(facing * _attack.knockback.x, _attack.knockback.y) * lerpf(1.0, 1.5, _charge_ratio)
 	if _attack.slam:
 		kb = Vector2(0.0, 600.0)   # while falling, spike anything below; the shockwave uses the move's knockback
-	hitbox.activate(dmg, kb, bonus, _attack.hitstun)
+	var stun := _attack.hitstun * (switch_bonus_hitstun if bonus else 1.0)
+	hitbox.radial = _attack.radial and not _attack.slam
+	hitbox.activate(dmg, kb, bonus, stun)
 	_show_slash(size, bonus)
 
 	# Launchers: rise with the enemy so you meet it at the top (DMC "High Time")
@@ -834,10 +867,11 @@ func _launch_follow_speed(enemy_launch_y: float) -> float:
 func _slam_shockwave() -> void:
 	_slam_landed = true
 	_attack_timer = _attack.active
-	var size := Vector2(_attack.slam_radius * 2.0, 40.0)
+	var size := Vector2(_attack.slam_radius * 2.0 * lerpf(1.0, 1.5, _charge_ratio), 40.0)
 	_place_hitbox(Vector2(0.0, -20.0), size)
 	hitbox.radial = true   # push everything away from where you landed
-	hitbox.activate(_attack.damage, _attack.knockback, false, _attack.hitstun)
+	hitbox.activate(_attack.damage * lerpf(1.0, _attack.charge_damage_mult, _charge_ratio),
+		_attack.knockback * lerpf(1.0, 1.5, _charge_ratio), false, _attack.hitstun)
 	_show_slash(size, false)
 	_shake = maxf(_shake, _attack.screen_shake)
 
@@ -855,6 +889,29 @@ func _show_slash(size: Vector2, bonus: bool) -> void:
 	slash.visible = true
 
 
+## Holding Attack through the windup of a chargeable move (Wendigo) stretches the windup
+## up to charge_max_time and powers the hit up. Let go (or hit full charge) to swing.
+func _update_move_charge(delta: float) -> void:
+	if not _charging:
+		return
+	if not Input.is_action_pressed("attack") or _charge_t >= _attack.charge_max_time:
+		_charging = false
+		return
+	var was_full := _charge_t >= _attack.charge_max_time
+	_charge_t += delta
+	_attack_timer = maxf(_attack_timer, 0.001)   # hold the windup open while charging
+	var r := clampf(_charge_t / _attack.charge_max_time, 0.0, 1.0)
+	body.modulate = Color.WHITE.lerp(Color(1.7, 1.15, 0.5), r)   # glow hotter as it charges
+	if r >= 1.0 and not was_full:
+		_shake = maxf(_shake, 2.0)   # full charge: little kick so you feel it
+
+
+func _end_charge_glow() -> void:
+	_charging = false
+	if not _dead:
+		body.modulate = Color.WHITE
+
+
 func _to_recovery() -> void:
 	hitbox.deactivate()
 	slash.visible = false
@@ -863,6 +920,7 @@ func _to_recovery() -> void:
 
 
 func _end_attack() -> void:
+	_end_charge_glow()
 	hitbox.deactivate()
 	hitbox.radial = false
 	slash.visible = false
@@ -875,8 +933,8 @@ func _end_attack() -> void:
 func _on_hit_landed(hurt: Hurtbox) -> void:
 	_lock_onto(hurt)
 	_switch_bonus_timer = 0.0   # bonus is used up by the first hit that connects
-	Juice.hitstop(self, _attack.hitstop)
-	_shake = maxf(_shake, _attack.screen_shake)
+	Juice.hitstop(self, _attack.hitstop * lerpf(1.0, 1.6, _charge_ratio))
+	_shake = maxf(_shake, _attack.screen_shake * lerpf(1.0, 1.6, _charge_ratio))
 	if _attack.pogo > 0.0 and state == State.ATTACK:
 		# Bounce off (Hollow Knight pogo): up you go, dash and air hang refreshed
 		velocity.y = -_attack.pogo
