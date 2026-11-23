@@ -134,6 +134,7 @@ collision_size = Vector2(20, 40)
 placeholder_color = Color(0.85, 0.72, 0.55, 1)
 health_multiplier = 1.0
 can_swing = true
+can_shoot = true
 combo = Array[ExtResource("2_attack")]([SubResource("Attack_combo_0"), SubResource("Attack_combo_1"), SubResource("Attack_combo_2")])
 air_combo = Array[ExtResource("2_attack")]([SubResource("Attack_air_combo_0"), SubResource("Attack_air_combo_1"), SubResource("Attack_air_combo_2")])
 forward_attack = SubResource("Attack_forward_attack_0")

@@ -42,6 +42,16 @@ extends Resource
 @export var swing_jump_boost := 300.0          ## px/s extra upward speed when jumping off the rope
 @export var launch_air_control := 900.0        ## px/s² steering after letting go (momentum is kept)
 
+@export_group("Crossbow")
+@export var can_shoot := false                 ## crossbow + tether bolt (Regular Guy)
+@export var shot_cooldown := 0.18              ## s between tap shots (mash to fire fast)
+@export var bolt_speed := 950.0
+@export var bolt_damage := 2.0                 ## tap bolts are weak: they keep juggles going
+@export var charge_time := 0.7                 ## s holding Shoot for a charged bolt
+@export var charged_bolt_damage := 14.0        ## charged bolts pierce and knock back hard
+@export var tether_range := 280.0              ## px; Special pulls you to your target within this
+@export var tether_speed := 950.0
+
 @export_group("Combat")
 @export var health_multiplier := 1.0           ## damage taken is divided by this
 @export var combo: Array[AttackData] = []      ## ground combo, in order (Attack)

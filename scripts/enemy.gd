@@ -25,6 +25,7 @@ const JUGGLE_GRAVITY := 1400.0   ## px/s² while launched (lighter than normal =
 var hit_state := HitState.NORMAL
 var _stun := 0.0
 var _juggle_count := 0
+var _suspend := 0.0      # s frozen in the air (the player's tether pulls them up to meet it)
 
 @onready var health: Health = $Health
 @onready var hurtbox: Hurtbox = $Hurtbox
@@ -34,6 +35,7 @@ var _juggle_count := 0
 
 
 func _ready() -> void:
+	add_to_group("enemies")
 	hurtbox.hit_received.connect(_on_hit)
 	health.died.connect(_on_died)
 	health.changed.connect(func(cur: float, _max: float) -> void: _set_hp_label(cur))
@@ -43,6 +45,29 @@ func _ready() -> void:
 
 func is_airborne() -> bool:
 	return hit_state == HitState.AIRBORNE
+
+
+func is_dead() -> bool:
+	return health.is_dead()
+
+
+## Center of the body, for aiming and the lock-on reticle.
+func get_center() -> Vector2:
+	return global_position + Vector2(0, -get_height() / 2.0)
+
+
+func get_height() -> float:
+	var col := get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if col != null and col.shape is RectangleShape2D:
+		return (col.shape as RectangleShape2D).size.y
+	return 32.0
+
+
+## Freeze in mid-air for a moment (only while launched).
+func suspend(time: float) -> void:
+	if hit_state == HitState.AIRBORNE:
+		_suspend = time
+		velocity = Vector2.ZERO
 
 
 ## Override in subclasses: movement/decisions while not being hit. Set velocity.x here.
@@ -66,7 +91,11 @@ func _physics_process(delta: float) -> void:
 			if _stun <= 0.0:
 				_set_hit_state(HitState.NORMAL)
 		HitState.AIRBORNE:
-			velocity.y += JUGGLE_GRAVITY * delta
+			if _suspend > 0.0:
+				_suspend -= delta
+				velocity = Vector2.ZERO
+			else:
+				velocity.y += JUGGLE_GRAVITY * delta
 			velocity.x = move_toward(velocity.x, 0.0, 200.0 * delta)   # light air drag
 		HitState.KNOCKDOWN:
 			_stun -= delta
@@ -90,6 +119,7 @@ func _on_hit(damage: float, knockback: Vector2, source: Hitbox) -> void:
 	var stun := source.hitstun if source != null else 0.3
 
 	if hit_state == HitState.AIRBORNE:
+		_suspend = 0.0
 		# Juggle: keep it in the air. Upward pops get weaker the longer the juggle goes.
 		_juggle_count += 1
 		var pop := maxf(1.0 - juggle_decay * (_juggle_count - 1), min_juggle_pop)

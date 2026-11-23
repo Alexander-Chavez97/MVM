@@ -7,6 +7,7 @@ extends CharacterBody2D
 ## Regular Guy swing (hold special near a grapple point).
 ## Combat (DMC-style): per-form move sets (AttackData) with directional moves, launchers,
 ## air combos and cancels. Switching forms gives a damage bonus on your next hit.
+## Regular Guy crossbow (RT): auto lock-on (swap with right stick), tap/charged bolts; tether to enemies (LT).
 ## Origin is at the player's feet.
 
 signal state_changed(old_state: State, new_state: State)
@@ -14,11 +15,12 @@ signal form_changed(form: FormData)
 signal swap_blocked
 signal died
 
-enum State { IDLE, RUN, JUMP, FALL, CLIMB, DASH, SWING, ATTACK, HURT }
+enum State { IDLE, RUN, JUMP, FALL, CLIMB, DASH, SWING, ATTACK, HURT, LIFT }
 enum AttackPhase { STARTUP, ACTIVE, RECOVERY }
 # IDLE/RUN/JUMP/FALL are worked out from movement each frame (see _update_state).
 # The rest are entered and exited explicitly with _set_state.
-const EXPLICIT_STATES := [State.CLIMB, State.DASH, State.SWING, State.ATTACK, State.HURT]
+const EXPLICIT_STATES := [State.CLIMB, State.DASH, State.SWING, State.ATTACK, State.HURT, State.LIFT]
+const BOLT_SCENE := preload("res://scenes/bolt.tscn")
 const SLAM_SPEED := 1000.0          ## px/s plummet for slam moves
 const HANG_GRAVITY_SCALE := 0.12    ## gravity fraction during an air-hang attack
 const HANG_MAX_FALL := 120.0        ## px/s max fall during an air-hang attack
@@ -33,6 +35,10 @@ const HANG_MAX_FALL := 120.0        ## px/s max fall during an air-hang attack
 @export var attack_buffer_time := 0.15       ## s an attack press is remembered (lets combos be mashed)
 @export var switch_bonus_time := 1.0         ## s after switching forms where hits do bonus damage
 @export var switch_bonus_multiplier := 1.5
+
+@export_group("Lock-on")
+@export var auto_target_range := 380.0       ## px; picks the nearest enemy (in front preferred) within this
+@export var lose_target_range := 460.0       ## px; lock breaks beyond this
 
 @export_group("Getting hit")
 @export var hurt_time := 0.25                ## s you lose control after being hit
@@ -75,6 +81,13 @@ var _chain_key := ""               # "combo" / "air" while in a combo string, ""
 var _hanging := false              # air hang active for this move
 var _air_hang_charges := 1         # refills on landing, pogo, launcher follow, hook grab, wall grab
 var _slam_landed := false
+var _move_from_ground := false     # was the current move started on the ground?
+var target: Enemy                  # current lock-on target (crossbow aim + tether)
+var _reticle: TargetReticle
+var _shot_timer := 0.0
+var _charge := 0.0                 # s Shoot has been held (keeps building through other actions)
+var _charge_orb: Polygon2D
+var _lift_timer := 0.0
 var _switch_bonus_timer := 0.0
 var _shake := 0.0
 var respawn_position := Vector2.ZERO   # set_checkpoint() changes this
@@ -111,6 +124,17 @@ func _ready() -> void:
 	_rope.default_color = Color(0.8, 0.75, 0.6)
 	add_child(_rope)
 	hitbox.hit_landed.connect(_on_hit_landed)
+	_reticle = TargetReticle.new()
+	_reticle.top_level = true
+	_reticle.visible = false
+	add_child(_reticle)
+	_charge_orb = Polygon2D.new()
+	var pts := PackedVector2Array()
+	for i in 10:
+		pts.append(Vector2.from_angle(TAU * i / 10.0) * 5.0)
+	_charge_orb.polygon = pts
+	_charge_orb.visible = false
+	body.add_child(_charge_orb)
 	_apply_form(0)
 
 
@@ -128,8 +152,10 @@ func _physics_process(delta: float) -> void:
 			_attack_move(delta)
 		State.HURT:
 			_hurt_move(delta)
+		State.LIFT:
+			_lift_move(delta)
 		_:
-			if not _try_start_dash() and not _try_start_swing() and not _try_start_attack():
+			if not _try_start_dash() and not _try_start_swing() and not _try_start_tether() and not _try_start_attack():
 				_handle_jump(delta)
 				_apply_gravity(delta)
 				_handle_run()
@@ -138,12 +164,14 @@ func _physics_process(delta: float) -> void:
 		_climb_check()
 	elif state == State.SWING:
 		_swing_constrain()
-	elif state not in [State.DASH, State.ATTACK, State.HURT]:
+	elif state not in [State.DASH, State.ATTACK, State.HURT, State.LIFT]:
 		if is_on_ceiling() and velocity.y < 0.0:
 			_end_jump()
 		_try_start_climb()
 	body.scale.x = facing
 	_update_grapple_target()
+	_update_target()
+	_handle_shooting(delta)
 	_update_rope()
 	_update_state()
 	hurtbox.invincible = _dead or _iframe_timer > 0.0 or state == State.DASH   # dash = dodge
@@ -629,6 +657,8 @@ func _steer_launch(dir: float, delta: float) -> void:
 func _update_rope() -> void:
 	if state == State.SWING:
 		_rope.points = PackedVector2Array([_center(), _anchor])
+	elif state == State.LIFT and is_instance_valid(target):
+		_rope.points = PackedVector2Array([_center(), target.get_center()])
 	elif _rope.get_point_count() > 0:
 		_rope.clear_points()
 
@@ -681,6 +711,7 @@ func _start_move(pick: Dictionary) -> void:
 	_is_jumping = false
 	_launched = false
 	_slam_landed = false
+	_move_from_ground = is_on_floor()
 	hitbox.radial = false
 	# Air hang: the first hit of an air string spends the charge; later hits in that string keep it
 	var airborne := not is_on_floor()
@@ -731,6 +762,10 @@ func _attack_move(delta: float) -> void:
 					_end_attack()
 					if _try_start_dash():
 						return
+				elif _can_tether() and Input.is_action_just_pressed("tether"):
+					_end_attack()
+					_try_start_tether()
+					return
 				elif _attack_timer <= 0.0:
 					_end_attack()
 
@@ -770,7 +805,10 @@ func _activate_hitbox() -> void:
 	_show_slash(size, bonus)
 
 	# Launchers: rise with the enemy so you meet it at the top (DMC "High Time")
-	if _attack.follow_launch == 2 or (_attack.follow_launch == 1 and Input.is_action_pressed("jump")):
+	# Only from the ground: in the air a launcher still launches the enemy, but you don't rise again
+	# (otherwise chaining launchers in mid-air climbs forever)
+	var wants_follow := _attack.follow_launch == 2 or (_attack.follow_launch == 1 and Input.is_action_pressed("jump"))
+	if wants_follow and _move_from_ground:
 		velocity.y = -_launch_follow_speed(_attack.knockback.y)
 		_air_hang_charges = 1
 		_jump_buffer_timer = 0.0   # the jump press was used for following, not for a jump-cancel
@@ -824,7 +862,8 @@ func _end_attack() -> void:
 	_set_state(State.FALL)   # _update_state picks the real state right after
 
 
-func _on_hit_landed(_hurt: Hurtbox) -> void:
+func _on_hit_landed(hurt: Hurtbox) -> void:
+	_lock_onto(hurt)
 	_switch_bonus_timer = 0.0   # bonus is used up by the first hit that connects
 	Juice.hitstop(self, _attack.hitstop)
 	_shake = maxf(_shake, _attack.screen_shake)
@@ -869,6 +908,7 @@ func _on_hurt(damage: float, _knockback: Vector2, source: Hitbox) -> void:
 		dir = -facing
 
 	# Drop whatever you were doing
+	_charge = 0.0
 	match state:
 		State.ATTACK:
 			_end_attack()
@@ -876,6 +916,8 @@ func _on_hurt(damage: float, _knockback: Vector2, source: Hitbox) -> void:
 			_release_swing(false)
 		State.DASH:
 			_end_dash()
+		State.LIFT:
+			_set_state(State.FALL)
 	_is_jumping = false
 	_launched = false
 
@@ -914,3 +956,178 @@ func _on_died() -> void:
 	_dead = false
 	_iframe_timer = invincibility_time   # a moment of safety after respawning
 	_set_state(State.FALL)
+
+
+# ---------------------------------------------------------------- lock-on
+
+## Keeps a target locked: the enemy you last hit, or the nearest one (in front preferred).
+## Right stick (or I / O) swaps to the next enemy to the left / right.
+func _update_target() -> void:
+	if not _target_ok(target, lose_target_range):
+		target = null
+	if Input.is_action_just_pressed("target_next"):
+		_swap_target(1.0)
+	elif Input.is_action_just_pressed("target_prev"):
+		_swap_target(-1.0)
+	if target == null:
+		target = _pick_auto_target()
+	# Reticle only matters while you have the crossbow
+	_reticle.visible = target != null and form.can_shoot
+	if _reticle.visible:
+		_reticle.global_position = target.get_center()
+		_reticle.target_size = Vector2(28, target.get_height())
+
+
+func _target_ok(e, max_range: float) -> bool:   # untyped: e may be a freed enemy
+	return is_instance_valid(e) and not e.is_dead() and e.get_center().distance_to(_center()) <= max_range
+
+
+func _pick_auto_target() -> Enemy:
+	var best: Enemy = null
+	var best_score := INF
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var e := node as Enemy
+		if not _target_ok(e, auto_target_range):
+			continue
+		var d := e.get_center() - _center()
+		var score := d.length()
+		if signf(d.x) != facing:
+			score += 150.0   # prefer enemies you're facing
+		if score < best_score:
+			best_score = score
+			best = e
+	return best
+
+
+## Next enemy to the right (dir = 1) or left (dir = -1) of the current target, wrapping around.
+func _swap_target(dir: float) -> void:
+	var list: Array[Enemy] = []
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var e := node as Enemy
+		if _target_ok(e, lose_target_range):
+			list.append(e)
+	if list.is_empty():
+		return
+	list.sort_custom(func(a: Enemy, b: Enemy) -> bool: return a.global_position.x < b.global_position.x)
+	var i := list.find(target)
+	if i == -1:
+		target = list[0] if dir > 0.0 else list[-1]
+	else:
+		target = list[posmod(i + int(dir), list.size())]
+
+
+func _lock_onto(hurt: Hurtbox) -> void:
+	var e := hurt.get_parent() as Enemy
+	if e != null and not e.is_dead():
+		target = e   # "who you're fighting" = who you just hit
+
+
+## Bolts report back here so hitting someone with the crossbow also locks onto them.
+func on_bolt_hit(hurt: Hurtbox) -> void:
+	_lock_onto(hurt)
+
+
+# ---------------------------------------------------------------- crossbow (Regular Guy)
+# Tap Shoot: weak bolt aimed at your target (pops juggled enemies up a little).
+# Hold Shoot: charge keeps building while you do anything else; release for a piercing heavy bolt.
+# With no target: straight ahead, or 45° up / down while holding up / down.
+
+func _handle_shooting(delta: float) -> void:
+	_shot_timer = maxf(_shot_timer - delta, 0.0)
+	if Input.is_action_pressed("shoot"):
+		_charge += delta
+	var full := _charge >= form.charge_time
+	if Input.is_action_just_pressed("shoot") and _can_shoot() and _shot_timer <= 0.0:
+		_fire_bolt(false)
+	if Input.is_action_just_released("shoot"):
+		if full and _can_shoot():
+			_fire_bolt(true)
+		_charge = 0.0
+	_update_charge_orb()
+
+
+func _can_shoot() -> bool:
+	if not form.can_shoot or _dead:
+		return false
+	if state == State.ATTACK:
+		return _attack_phase == AttackPhase.RECOVERY
+	return state in [State.IDLE, State.RUN, State.JUMP, State.FALL, State.SWING]
+
+
+func _aim_direction() -> Vector2:
+	if target != null:
+		return (target.get_center() - _center()).normalized()
+	if Input.is_action_pressed("move_up"):
+		return Vector2(facing, -1.0).normalized()
+	if Input.is_action_pressed("move_down") and not is_on_floor():
+		return Vector2(facing, 1.0).normalized()
+	return Vector2(facing, 0.0)
+
+
+func _fire_bolt(charged: bool) -> void:
+	var dir := _aim_direction()
+	if dir.x != 0.0:
+		facing = signf(dir.x)   # turn to face what you're shooting
+	var bolt = BOLT_SCENE.instantiate()   # untyped: launch()/shooter live on the bolt script
+	get_parent().add_child(bolt)
+	bolt.global_position = _center() + dir * (form.collision_size.x / 2.0 + 6.0)
+	bolt.shooter = self
+	if charged:
+		bolt.launch(dir, form.bolt_speed * 1.2, form.charged_bolt_damage,
+			Vector2(signf(dir.x) * 450.0, -200.0), 0.6, true)
+		_shake = maxf(_shake, 3.0)
+	else:
+		# small upward pop: keeps launched enemies in the air between melee strings
+		bolt.launch(dir, form.bolt_speed, form.bolt_damage, Vector2(signf(dir.x) * 60.0, -140.0), 0.25, false)
+		_shot_timer = form.shot_cooldown
+
+
+func _update_charge_orb() -> void:
+	var show_orb := form.can_shoot and _charge > 0.15
+	_charge_orb.visible = show_orb
+	if not show_orb:
+		return
+	var t := clampf(_charge / form.charge_time, 0.0, 1.0)
+	_charge_orb.position = Vector2(form.collision_size.x / 2.0 + 6.0, -form.collision_size.y * 0.55)
+	_charge_orb.scale = Vector2.ONE * lerpf(0.4, 1.2, t)
+	_charge_orb.color = Color(1, 0.85, 0.3) if t >= 1.0 else Color(0.8, 0.8, 0.9, 0.7)
+
+
+# ---------------------------------------------------------------- tether (Regular Guy, Angel Lift)
+# Tether button (LT / U): shoot a tether bolt at your target and pull yourself to it.
+# A launched target freezes in the air for a moment so you meet it. Refreshes air combo + dash.
+
+func _can_tether() -> bool:
+	return form.can_shoot and _target_ok(target, form.tether_range)
+
+
+func _try_start_tether() -> bool:
+	if not _can_tether() or not Input.is_action_just_pressed("tether"):
+		return false
+	_is_jumping = false
+	_launched = false
+	_lift_timer = 0.4
+	target.suspend(0.4)
+	_set_state(State.LIFT)
+	return true
+
+
+func _lift_move(delta: float) -> void:
+	_lift_timer -= delta
+	if not is_instance_valid(target) or target.is_dead():
+		_set_state(State.FALL)
+		return
+	var side := signf(target.global_position.x - global_position.x)
+	if side == 0.0:
+		side = facing
+	facing = side
+	# Stop right next to the target, on your side of it
+	var dest := target.get_center() - Vector2(side * (form.collision_size.x / 2.0 + 18.0), 0.0)
+	var to := dest - _center()
+	if to.length() < 14.0 or _lift_timer <= 0.0:
+		velocity = Vector2(0.0, -120.0)   # small hop so you're in position to air combo
+		_air_hang_charges = 1
+		_refill_dashes()
+		_set_state(State.FALL)
+		return
+	velocity = to.normalized() * form.tether_speed
