@@ -57,10 +57,14 @@ func get_center() -> Vector2:
 
 
 func get_height() -> float:
+	return get_size().y
+
+
+func get_size() -> Vector2:
 	var col := get_node_or_null("CollisionShape2D") as CollisionShape2D
 	if col != null and col.shape is RectangleShape2D:
-		return (col.shape as RectangleShape2D).size.y
-	return 32.0
+		return (col.shape as RectangleShape2D).size
+	return Vector2(32, 32)
 
 
 ## Freeze in mid-air for a moment (only while launched).

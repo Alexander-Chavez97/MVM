@@ -36,6 +36,10 @@ const HANG_MAX_FALL := 120.0        ## px/s max fall during an air-hang attack
 @export var switch_bonus_time := 1.0         ## s after switching forms where hits do bonus damage
 @export var switch_bonus_multiplier := 1.5
 
+@export_group("Enemy step")
+@export var step_reach := 14.0               ## px of slack around bodies that still counts as touching
+@export var steps_per_enemy := 2             ## jumps off the same enemy before you have to land
+
 @export_group("Lock-on")
 @export var auto_target_range := 380.0       ## px; picks the nearest enemy (in front preferred) within this
 @export var lose_target_range := 460.0       ## px; lock breaks beyond this
@@ -88,6 +92,7 @@ var _shot_timer := 0.0
 var _charge := 0.0                 # s Shoot has been held (keeps building through other actions)
 var _charge_orb: Polygon2D
 var _lift_timer := 0.0
+var _steps := {}                   # enemy instance id -> times jumped off it this airtime
 var _switch_bonus_timer := 0.0
 var _shake := 0.0
 var respawn_position := Vector2.ZERO   # set_checkpoint() changes this
@@ -141,6 +146,7 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	_update_timers(delta)
 	_handle_form_input()
+	_try_enemy_step()
 	match state:
 		State.CLIMB:
 			_climb_move()
@@ -351,6 +357,7 @@ func _update_timers(delta: float) -> void:
 	if is_on_floor():
 		_coyote_timer = coyote_time
 		_air_hang_charges = 1
+		_steps.clear()
 		_refill_dashes(false)   # runs every frame on the ground: don't wipe the cooldown
 	else:
 		_coyote_timer = maxf(_coyote_timer - delta, 0.0)
@@ -471,13 +478,9 @@ func _climb_check() -> void:
 ## Special: quick burst in the held direction (or facing). No gravity during it.
 ## Returns true if a dash started this frame.
 func _try_start_dash() -> bool:
-	if not form.can_dash or _dash_cooldown_timer > 0.0:
-		return false
-	if not Input.is_action_just_pressed("special"):
+	if not _can_dash() or not Input.is_action_just_pressed("special"):
 		return false
 	if not is_on_floor():
-		if _air_dashes_left <= 0:
-			return false
 		_air_dashes_left -= 1
 	var dir := signf(Input.get_axis("move_left", "move_right"))
 	_dash_dir = dir if dir != 0.0 else facing
@@ -489,6 +492,11 @@ func _try_start_dash() -> bool:
 	velocity = Vector2(_dash_dir * form.dash_speed, 0.0)
 	_set_state(State.DASH)
 	return true
+
+
+## Dash is ready: right form, off cooldown, and (in the air) an air dash left.
+func _can_dash() -> bool:
+	return form.can_dash and _dash_cooldown_timer <= 0.0 and (is_on_floor() or _air_dashes_left > 0)
 
 
 func _dash_move(delta: float) -> void:
@@ -732,6 +740,12 @@ func _start_move(pick: Dictionary) -> void:
 
 
 func _attack_move(delta: float) -> void:
+	# Dash cancel (Chupacabra): Special cancels ANY part of an attack - windup, hit or recovery.
+	# Checked first, and only cancels if the dash can actually happen (no dropped attack for nothing).
+	if Input.is_action_just_pressed("special") and _can_dash():
+		_end_attack()
+		_try_start_dash()
+		return
 	_attack_timer -= delta
 	match _attack_phase:
 		AttackPhase.STARTUP:
@@ -758,10 +772,6 @@ func _attack_move(delta: float) -> void:
 				if _jump_buffer_timer > 0.0 and _coyote_timer > 0.0:
 					_end_attack()
 					_handle_jump(delta)
-				elif form.can_dash and Input.is_action_just_pressed("special"):
-					_end_attack()
-					if _try_start_dash():
-						return
 				elif _can_tether() and Input.is_action_just_pressed("tether"):
 					_end_attack()
 					_try_start_tether()
@@ -1131,3 +1141,54 @@ func _lift_move(delta: float) -> void:
 		_set_state(State.FALL)
 		return
 	velocity = to.normalized() * form.tether_speed
+
+
+# ---------------------------------------------------------------- enemy step (DMC jump cancel)
+# In the air, press Jump while touching (or right next to) an enemy: you jump off it.
+# Cancels any attack or dash, and refreshes your air combo, so you can loop
+# stomp -> jump off -> stomp, or air string -> jump off -> air string.
+# Limited to steps_per_enemy jumps off the same enemy before you land, so it can't climb forever.
+
+func _try_enemy_step() -> bool:
+	if _jump_buffer_timer <= 0.0 or _coyote_timer > 0.0 or is_on_floor():
+		return false   # on the ground (or coyote time) a normal jump happens instead
+	if state not in [State.JUMP, State.FALL, State.ATTACK, State.DASH]:
+		return false
+	var e := _find_step_enemy()
+	if e == null:
+		return false
+	var id := e.get_instance_id()
+	_steps[id] = _steps.get(id, 0) + 1
+
+	if state == State.ATTACK:
+		_end_attack()
+	elif state == State.DASH:
+		_end_dash()
+	_jump_buffer_timer = 0.0
+	_launched = false
+	_is_jumping = true          # a normal held jump from here: hold Jump to go higher
+	_jump_hold_timer = 0.0
+	velocity.y = -form.jump_speed
+	_air_hang_charges = 1
+	_pop()
+	return true
+
+
+## Closest living enemy whose body is touching yours (with step_reach of slack)
+## that you haven't already used up.
+func _find_step_enemy() -> Enemy:
+	var my_half := form.collision_size / 2.0
+	var best: Enemy = null
+	var best_d := INF
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var e := node as Enemy
+		if e == null or e.is_dead():
+			continue
+		if _steps.get(e.get_instance_id(), 0) >= steps_per_enemy:
+			continue
+		var d := e.get_center() - _center()
+		var reach := my_half + e.get_size() / 2.0 + Vector2(step_reach, step_reach)
+		if absf(d.x) <= reach.x and absf(d.y) <= reach.y and d.length() < best_d:
+			best = e
+			best_d = d.length()
+	return best
